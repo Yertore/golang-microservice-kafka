@@ -4,20 +4,52 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/segmentio/kafka-go"
 )
+
+var (
+	messagesSent = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "producer_messages_sent_total",
+			Help: "Total number of messages sent by producer",
+		},
+	)
+	errorsTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "producer_errors_total",
+			Help: "Total number of send errors",
+		},
+	)
+)
+
+func init() {
+	prometheus.MustRegister(messagesSent)
+	prometheus.MustRegister(errorsTotal)
+}
 
 func main() {
 	broker := os.Getenv("KAFKA_BROKER")
 	if broker == "" {
 		broker = "localhost:9092"
 	}
+
+	// Start Prometheus metrics server
+	go func() {
+		http.Handle("/metrics", promhttp.Handler())
+		log.Println("📊 Producer metrics on :2112/metrics")
+		if err := http.ListenAndServe(":2112", nil); err != nil {
+			log.Fatalf("❌ Metrics server failed: %v", err)
+		}
+	}()
 
 	writer := kafka.NewWriter(kafka.WriterConfig{
 		Brokers:  []string{broker},
@@ -52,10 +84,12 @@ func main() {
 						Value: []byte(msg),
 					})
 					if err != nil {
+						errorsTotal.Inc()
 						log.Printf("❌ Worker #%d failed to send: %v", id, err)
 						time.Sleep(time.Second)
 						continue
 					}
+					messagesSent.Inc()
 					log.Printf("📤 Worker #%d sent: %s", id, msg)
 					time.Sleep(2 * time.Second)
 				}
